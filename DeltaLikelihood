@@ -1,0 +1,114 @@
+#region Using declarations
+using System;
+using System.Collections.Generic;
+using System.ComponentModel;
+using System.ComponentModel.DataAnnotations;
+using System.Linq;
+using System.Text;
+using System.Threading.Tasks;
+using System.Windows;
+using System.Windows.Input;
+using System.Windows.Media;
+using System.Xml.Serialization;
+using NinjaTrader.Cbi;
+using NinjaTrader.Gui;
+using NinjaTrader.Gui.Chart;
+using NinjaTrader.Gui.SuperDom;
+using NinjaTrader.Gui.Tools;
+using NinjaTrader.Data;
+using NinjaTrader.NinjaScript;
+using NinjaTrader.Core.FloatingPoint;
+using NinjaTrader.NinjaScript.Indicators;
+using NinjaTrader.NinjaScript.DrawingTools;
+#endregion
+
+//This namespace holds Strategies in this folder and is required. Do not change it. 
+namespace NinjaTrader.NinjaScript.Strategies
+{
+	//Forecast next price using cumulative delta
+	public class DeltaLikelihood : Strategy
+	{
+		private OrderFlowCumulativeDelta orderFlowCumDelta;
+		private int totalLongDeltaCrosses, totalShortDeltaCrosses, longReversal, shortReversal, shortContinuation, longContinuation;
+		private double lastLongClose, lastShortClose;
+		protected override void OnStateChange()
+		{
+			if (State == State.SetDefaults)
+			{
+				Description									= @"Forecast next price using cumulative delta";
+				Name										= "DeltaLikelihood";
+				Calculate									= Calculate.OnBarClose;
+				EntriesPerDirection							= 1;
+				EntryHandling								= EntryHandling.AllEntries;
+				IsExitOnSessionCloseStrategy				= true;
+				ExitOnSessionCloseSeconds					= 30;
+				IsFillLimitOnTouch							= false;
+				MaximumBarsLookBack							= MaximumBarsLookBack.TwoHundredFiftySix;
+				OrderFillResolution							= OrderFillResolution.Standard;
+				Slippage									= 0;
+				StartBehavior								= StartBehavior.WaitUntilFlat;
+				TimeInForce									= TimeInForce.Gtc;
+				TraceOrders									= false;
+				RealtimeErrorHandling						= RealtimeErrorHandling.StopCancelClose;
+				StopTargetHandling							= StopTargetHandling.PerEntryExecution;
+				BarsRequiredToTrade							= 20;
+				// Disable this property for performance gains in Strategy Analyzer optimizations
+				// See the Help Guide for additional information
+				IsInstantiatedOnEachOptimizationIteration	= true;
+			}
+			else if (State == State.Configure)
+			{
+				AddDataSeries(Data.BarsPeriodType.Tick, 1);
+			}
+			else if (State == State.DataLoaded) {
+				orderFlowCumDelta = OrderFlowCumulativeDelta(CumulativeDeltaType.BidAsk, CumulativeDeltaPeriod.Bar, 0);
+                AddChartIndicator(orderFlowCumDelta);	
+			}
+			else if (State == State.Terminated) {
+				//Print results to screen
+				if (totalLongDeltaCrosses > 0) {
+					Print(longContinuation + " / " +totalLongDeltaCrosses);
+					Print("% Chance of Long Continuation On Next Bar : " + (longContinuation/(double)totalLongDeltaCrosses)*100.00d);
+					Print("% Chance of Long Reversal On Next Bar : " + (longReversal/(double)totalLongDeltaCrosses)*100.00d);
+				}
+				if (totalShortDeltaCrosses > 0) {
+					Print("% Chance of Short Continuation On Next Bar : " + (shortContinuation/(double)totalShortDeltaCrosses)*100.00d);
+					Print("% Chance of Short Reversal On Next Bar : " + (shortContinuation/(double)totalShortDeltaCrosses)*100.00d);	
+				}
+			}
+		}
+
+		protected override void OnBarUpdate()
+		{
+			try {
+				double DeltaClose = orderFlowCumDelta.DeltaClose[0];
+				if (DeltaClose != 0 && BarsInProgress == 0) {
+					//Count crosses and save the close price
+					if (DeltaClose > 100 && lastLongClose == 0) {
+						totalLongDeltaCrosses++;
+						lastLongClose = Close[0];
+					}
+					if (DeltaClose < -100 && lastShortClose == 0) {
+						totalShortDeltaCrosses++;
+						lastShortClose = Close[0];
+					}
+					if (lastLongClose != 0 && Close[0] != lastLongClose) {
+						if (Close[0] > lastLongClose) longContinuation++; //If the current close price is higher than when the delta crosses the 100 threshold then it was better to EnterLong
+						else longReversal++; //Else close was lower, better to enter short and reverse
+						lastLongClose = 0;
+					}
+					if (lastShortClose != 0 && Close[0] != lastShortClose) {
+						if (Close[0] < lastShortClose) shortContinuation++;
+						else shortReversal++;
+						lastShortClose = 0;
+					}
+				}
+			
+			//From our analysis of Oil CL on 1 minute bars, there is a 54% chance of oil reversing short after a delta cross above 100
+			if (DeltaClose > 100 && Position.MarketPosition == MarketPosition.Flat && BarsInProgress == 0) EnterShort();
+			if (Position.MarketPosition == MarketPosition.Short && BarsInProgress == 0) ExitShort();
+			} catch {}
+			
+		}
+	}
+}
